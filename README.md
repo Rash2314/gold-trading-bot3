@@ -29,6 +29,12 @@ Créer les secrets Codespaces `APCA_API_KEY_ID` et `APCA_API_SECRET_KEY`, puis l
 Une architecture robuste ne garantit pas la rentabilité. Valider sur plusieurs régimes de
 marché avant toute évolution.
 
+## Vantage / MetaTrader 5
+
+Une version native MQL5 verrouillée sur les comptes Vantage Demo est disponible dans
+[`mt5/`](mt5/). Elle travaille directement sur `XAUUSD` et peut envoyer des notifications
+à l'application MetaTrader 5 sur iPhone.
+
 ## Test crypto 24/7
 
 Le même moteur peut être validé sur Alpaca Paper avec `SYMBOL=BTC/USD`. Les ordres crypto
