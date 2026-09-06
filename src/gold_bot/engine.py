@@ -58,17 +58,25 @@ class TradingEngine:
     def run(self):
         entry_deadline = self.risk.started_at.timestamp() + self.settings.entry_window_minutes * 60
         final_deadline = entry_deadline + self.settings.max_hold_minutes * 60
-        while time.time() < entry_deadline or (self.opened_at and time.time() < final_deadline):
-            print(json.dumps(self.tick(), sort_keys=True))
-            time.sleep(self.settings.poll_seconds)
-        if self.opened_at:
-            receipt = self.broker.close_position(self.settings.symbol)
-            event = {"timestamp": datetime.now(timezone.utc).isoformat(),
-                     "symbol": self.settings.symbol, "action": "session_close",
-                     "order_id": receipt.order_id, "submitted": receipt.submitted}
-            self.risk.record_exit(self.active_notional)
-            self.opened_at, self.active_side, self.active_notional = None, None, 0.0
-            self._journal(event)
+        try:
+            while time.time() < entry_deadline or (self.opened_at and time.time() < final_deadline):
+                print(json.dumps(self.tick(), sort_keys=True))
+                time.sleep(self.settings.poll_seconds)
+        except KeyboardInterrupt:
+            print("Arrêt demandé : clôture de sécurité en cours.")
+        finally:
+            self._close_active("session_close")
+
+    def _close_active(self, action):
+        if not self.opened_at:
+            return
+        receipt = self.broker.close_position(self.settings.symbol)
+        event = {"timestamp": datetime.now(timezone.utc).isoformat(),
+                 "symbol": self.settings.symbol, "action": action,
+                 "order_id": receipt.order_id, "submitted": receipt.submitted}
+        self.risk.record_exit(self.active_notional)
+        self.opened_at, self.active_side, self.active_notional = None, None, 0.0
+        self._journal(event)
 
     def _journal(self, event):
         with self.journal.open("a", encoding="utf-8") as handle:
