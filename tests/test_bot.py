@@ -28,3 +28,14 @@ def test_cooldown_and_window():
 def test_crypto_dry_run_never_submits():
     receipt = AlpacaPaperBroker(Settings()).submit_market_order("BTC/USD", Signal.BUY, 10)
     assert receipt.submitted is False
+
+
+def test_no_position_means_no_close(tmp_path):
+    from gold_bot.engine import TradingEngine
+
+    class Broker:
+        def close_position(self, symbol):
+            raise AssertionError("nothing should be closed")
+
+    engine = TradingEngine(Settings(), Broker(), lambda _: pd.DataFrame(), tmp_path / "j.jsonl")
+    engine._close_active("session_close")
