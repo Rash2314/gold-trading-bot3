@@ -26,7 +26,7 @@ class AlpacaPaperBroker:
             symbol=symbol,
             notional=round(notional, 2),
             side=OrderSide.BUY if side is Signal.BUY else OrderSide.SELL,
-            time_in_force=TimeInForce.DAY,
+            time_in_force=TimeInForce.GTC if "/" in symbol else TimeInForce.DAY,
         )
         order = client.submit_order(order_data=request)
         return OrderReceipt(str(order.id), True)
