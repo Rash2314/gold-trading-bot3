@@ -28,3 +28,9 @@ Créer les secrets Codespaces `APCA_API_KEY_ID` et `APCA_API_SECRET_KEY`, puis l
 
 Une architecture robuste ne garantit pas la rentabilité. Valider sur plusieurs régimes de
 marché avant toute évolution.
+
+## Test crypto 24/7
+
+Le même moteur peut être validé sur Alpaca Paper avec `SYMBOL=BTC/USD`. Les ordres crypto
+utilisent automatiquement la durée `GTC`, tandis que les actions utilisent `DAY`. Commencer
+toujours avec `ENABLE_PAPER_ORDERS=false`.
