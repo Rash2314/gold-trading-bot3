@@ -1,0 +1,5 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+bitcoin_mt5_graph.png
