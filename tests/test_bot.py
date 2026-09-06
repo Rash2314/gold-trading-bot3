@@ -4,6 +4,7 @@ import pytest
 from gold_bot.config import Settings
 from gold_bot.risk import SessionRisk
 from gold_bot.strategy import IntradayGoldStrategy, Signal
+from gold_bot.broker import AlpacaPaperBroker
 
 
 def test_live_endpoint_is_impossible():
@@ -22,3 +23,8 @@ def test_cooldown_and_window():
     risk.record_entry(now, 100)
     assert risk.may_enter(now + timedelta(minutes=5), 100)[1] == "cooldown_active"
     assert risk.may_enter(now + timedelta(minutes=60), 100)[1] == "entry_window_closed"
+
+
+def test_crypto_dry_run_never_submits():
+    receipt = AlpacaPaperBroker(Settings()).submit_market_order("BTC/USD", Signal.BUY, 10)
+    assert receipt.submitted is False
