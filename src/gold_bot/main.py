@@ -5,15 +5,20 @@ from .engine import TradingEngine
 
 
 def provider(settings):
-    from alpaca.data.historical import StockHistoricalDataClient
-    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
+    from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
-    client = StockHistoricalDataClient(settings.api_key, settings.secret_key)
+    stock_client = StockHistoricalDataClient(settings.api_key, settings.secret_key)
+    crypto_client = CryptoHistoricalDataClient(settings.api_key, settings.secret_key)
+
     def fetch(symbol):
         end = datetime.now(timezone.utc)
-        request = StockBarsRequest(symbol_or_symbols=[symbol], timeframe=TimeFrame.Minute,
-                                   start=end - timedelta(hours=3), end=end)
-        frame = client.get_stock_bars(request).df
+        request_type = CryptoBarsRequest if "/" in symbol else StockBarsRequest
+        request = request_type(symbol_or_symbols=[symbol], timeframe=TimeFrame.Minute,
+                               start=end - timedelta(hours=3), end=end)
+        client = crypto_client if "/" in symbol else stock_client
+        method = client.get_crypto_bars if "/" in symbol else client.get_stock_bars
+        frame = method(request).df
         return frame.xs(symbol) if getattr(frame.index, "nlevels", 1) > 1 else frame
     return fetch
 
@@ -27,4 +32,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
