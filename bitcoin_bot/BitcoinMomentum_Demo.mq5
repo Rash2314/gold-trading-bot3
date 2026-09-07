@@ -1,5 +1,5 @@
 #property strict
-#property version   "1.00"
+#property version   "1.10"
 #property description "Autonomous BTCUSD momentum experiment restricted to MT5 demo accounts"
 
 #include <Trade/Trade.mqh>
@@ -16,7 +16,10 @@ input double MinimumAdx = 15.0;
 input double StopAtrMultiple = 1.30;
 input double RewardRiskRatio = 1.30;
 input double RiskPerTradePct = 0.75;
+input int MaximumOpenPositions = 3;
 input double FallbackVolume = 0.01;
+input double DailyTargetMoney = 50.0;
+input double DailyProfitCapMoney = 120.0;
 input double DailyLossLimitPct = 5.0;
 input double MaximumEquityDrawdownPct = 15.0;
 input int MaximumTradesPerDay = 35;
@@ -38,6 +41,34 @@ int day_key = -1;
 int trades_today = 0;
 double day_start_equity = 0.0;
 double initial_equity = 0.0;
+
+int CountOwnOpenPositions()
+{
+   int count = 0;
+   for(int i=PositionsTotal()-1; i>=0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
+         PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+         count++;
+   }
+   return(count);
+}
+
+bool ExistingPositionsMatchDirection(bool buy_signal)
+{
+   ENUM_POSITION_TYPE wanted = buy_signal ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+   for(int i=PositionsTotal()-1; i>=0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol ||
+         PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != wanted) return(false);
+   }
+   return(true);
+}
 
 bool IsDemoOrTester()
 {
@@ -89,6 +120,8 @@ bool RiskLimitsAllowEntry()
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    if(trades_today >= MaximumTradesPerDay) return(false);
    if(PortfolioTradesToday() >= MaximumPortfolioTradesPerDay) return(false);
+   if(day_start_equity > 0.0 && equity >= day_start_equity + DailyProfitCapMoney)
+      return(false);
    if(day_start_equity > 0.0 && equity <= day_start_equity * (1.0 - DailyLossLimitPct / 100.0))
       return(false);
    if(initial_equity > 0.0 && equity <= initial_equity * (1.0 - MaximumEquityDrawdownPct / 100.0))
@@ -119,7 +152,8 @@ double RiskBasedVolume(double stop_distance)
    if(stop_distance <= 0.0 || tick_size <= 0.0 || tick_value <= 0.0)
       return(NormalizeVolume(FallbackVolume));
 
-   double risk_money = AccountInfoDouble(ACCOUNT_EQUITY) * RiskPerTradePct / 100.0;
+   double risk_money = AccountInfoDouble(ACCOUNT_EQUITY) *
+                       (RiskPerTradePct / MaximumOpenPositions) / 100.0;
    double loss_per_lot = (stop_distance / tick_size) * tick_value;
    if(loss_per_lot <= 0.0) return(NormalizeVolume(FallbackVolume));
    return(NormalizeVolume(risk_money / loss_per_lot));
@@ -149,6 +183,8 @@ bool ReadIndicators(double &fast_now, double &fast_before,
 
 bool OpenPosition(bool buy_signal, double atr_value, datetime current_bar)
 {
+   if(CountOwnOpenPositions() >= MaximumOpenPositions ||
+      !ExistingPositionsMatchDirection(buy_signal)) return(false);
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double entry = buy_signal ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
                              : SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -189,7 +225,8 @@ int OnInit()
    }
    if(FastEmaPeriod <= 1 || SlowEmaPeriod <= FastEmaPeriod || RiskPerTradePct <= 0.0 ||
       StopAtrMultiple <= 0.0 || RewardRiskRatio <= 0.0 || MaximumTradesPerDay < 1 ||
-      MaximumPortfolioTradesPerDay < MaximumTradesPerDay)
+      MaximumPortfolioTradesPerDay < MaximumTradesPerDay || DailyTargetMoney < 0.0 ||
+      DailyProfitCapMoney <= DailyTargetMoney || MaximumOpenPositions < 1)
       return(INIT_PARAMETERS_INCORRECT);
 
    trade.SetExpertMagicNumber(MagicNumber);
@@ -208,7 +245,9 @@ int OnInit()
    ResetDailyCountersIfNeeded();
    Print("BTC DEMO BOT READY: symbol max/day=", MaximumTradesPerDay,
          " portfolio max/day=", MaximumPortfolioTradesPerDay,
-         " risk/trade=", RiskPerTradePct, "% daily stop=", DailyLossLimitPct, "%");
+         " max open=", MaximumOpenPositions,
+         " total position risk budget=", RiskPerTradePct, "% daily target=", DailyTargetMoney,
+         " daily cap=", DailyProfitCapMoney, " daily stop=", DailyLossLimitPct, "%");
    return(INIT_SUCCEEDED);
 }
 
@@ -227,7 +266,8 @@ void OnTick()
    if(current_bar == 0 || current_bar == last_bar) return;
    last_bar = current_bar;
 
-   if(PositionSelect(_Symbol) || !RiskLimitsAllowEntry() || !CooldownComplete()) return;
+   if(CountOwnOpenPositions() >= MaximumOpenPositions ||
+      !RiskLimitsAllowEntry() || !CooldownComplete()) return;
 
    double fast_now, fast_before, slow_now, slow_before, rsi_now, adx_now, atr_now;
    if(!ReadIndicators(fast_now, fast_before, slow_now, slow_before, rsi_now, adx_now, atr_now)) return;
