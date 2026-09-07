@@ -1,5 +1,5 @@
 #property strict
-#property version   "1.00"
+#property version   "1.20"
 #property description "Autonomous XAUUSD momentum experiment restricted to MT5 demo accounts"
 
 #include <Trade/Trade.mqh>
@@ -16,7 +16,10 @@ input double MinimumAdx = 18.0;
 input double StopAtrMultiple = 1.50;
 input double RewardRiskRatio = 1.50;
 input double RiskPerTradePct = 0.50;
+input int MaximumOpenPositions = 3;
 input double FallbackVolume = 0.01;
+input double DailyTargetMoney = 50.0;
+input double DailyProfitCapMoney = 120.0;
 input double DailyLossLimitPct = 5.0;
 input double MaximumEquityDrawdownPct = 15.0;
 input int MaximumTradesPerDay = 25;
@@ -25,6 +28,11 @@ input int CooldownBars = 1;
 input int MaximumSpreadPoints = 1000;
 input int SlippagePoints = 50;
 input long MagicNumber = 23142028;
+input bool ShowMultiTimeframeSignals = true;
+input bool ApplyReadableChartTheme = true;
+input int SignalPanelX = 12;
+input int SignalPanelY = 35;
+input int SignalArrowOffsetPoints = 150;
 
 CTrade trade;
 int fast_handle = INVALID_HANDLE;
@@ -38,6 +46,137 @@ int day_key = -1;
 int trades_today = 0;
 double day_start_equity = 0.0;
 double initial_equity = 0.0;
+
+#define DISPLAY_TF_COUNT 4
+ENUM_TIMEFRAMES display_tf[DISPLAY_TF_COUNT] = {PERIOD_M5, PERIOD_M15, PERIOD_M30, PERIOD_H1};
+string display_tf_name[DISPLAY_TF_COUNT] = {"M5", "M15", "M30", "H1"};
+int display_fast[DISPLAY_TF_COUNT];
+int display_slow[DISPLAY_TF_COUNT];
+int display_rsi[DISPLAY_TF_COUNT];
+int display_adx[DISPLAY_TF_COUNT];
+datetime display_last_bar[DISPLAY_TF_COUNT];
+string visual_prefix = "BSV1_";
+
+int CountOwnOpenPositions()
+{
+   int count = 0;
+   for(int i=PositionsTotal()-1; i>=0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
+         PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+         count++;
+   }
+   return(count);
+}
+
+bool ExistingPositionsMatchDirection(bool buy_signal)
+{
+   ENUM_POSITION_TYPE wanted = buy_signal ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+   for(int i=PositionsTotal()-1; i>=0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol ||
+         PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != wanted) return(false);
+   }
+   return(true);
+}
+
+void ApplyChartTheme()
+{
+   if(!ApplyReadableChartTheme) return;
+   ChartSetInteger(0, CHART_MODE, CHART_CANDLES);
+   ChartSetInteger(0, CHART_SHOW_GRID, false);
+   ChartSetInteger(0, CHART_COLOR_BACKGROUND, clrWhite);
+   ChartSetInteger(0, CHART_COLOR_FOREGROUND, clrBlack);
+   ChartSetInteger(0, CHART_COLOR_GRID, clrWhite);
+   ChartSetInteger(0, CHART_COLOR_CHART_UP, clrForestGreen);
+   ChartSetInteger(0, CHART_COLOR_CHART_DOWN, clrCrimson);
+   ChartSetInteger(0, CHART_COLOR_CANDLE_BULL, clrForestGreen);
+   ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR, clrCrimson);
+   ChartSetInteger(0, CHART_COLOR_VOLUME, clrSilver);
+   ChartSetInteger(0, CHART_COLOR_BID, clrDodgerBlue);
+   ChartSetInteger(0, CHART_COLOR_ASK, clrOrangeRed);
+   ChartRedraw();
+}
+
+void SetPanelLabel(string name, string text, int x, int y, color clr, int size=10)
+{
+   string object_name = visual_prefix + name;
+   if(ObjectFind(0, object_name) < 0)
+      ObjectCreate(0, object_name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, object_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, object_name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, object_name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, object_name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, object_name, OBJPROP_FONTSIZE, size);
+   ObjectSetString(0, object_name, OBJPROP_FONT, "Arial");
+   ObjectSetString(0, object_name, OBJPROP_TEXT, text);
+}
+
+int ReadDisplaySignal(int index)
+{
+   double fast[2], slow[2], rsi[1], adx[1];
+   if(CopyBuffer(display_fast[index], 0, 1, 2, fast) != 2) return(0);
+   if(CopyBuffer(display_slow[index], 0, 1, 2, slow) != 2) return(0);
+   if(CopyBuffer(display_rsi[index], 0, 1, 1, rsi) != 1) return(0);
+   if(CopyBuffer(display_adx[index], 0, 1, 1, adx) != 1) return(0);
+
+   double fast_before = fast[0], fast_now = fast[1];
+   double slow_now = slow[1];
+   if(fast_now > slow_now && fast_now >= fast_before &&
+      rsi[0] >= LongRsiMinimum && adx[0] >= MinimumAdx) return(1);
+   if(fast_now < slow_now && fast_now <= fast_before &&
+      rsi[0] <= ShortRsiMaximum && adx[0] >= MinimumAdx) return(-1);
+   return(0);
+}
+
+void DrawSignalArrow(int index, int signal)
+{
+   if(signal == 0) return;
+   datetime bar_time = iTime(_Symbol, display_tf[index], 1);
+   if(bar_time == 0) return;
+   string name = visual_prefix + display_tf_name[index] + "_" +
+                 (signal > 0 ? "BUY_" : "SELL_") + LongToString((long)bar_time);
+   if(ObjectFind(0, name) >= 0) return;
+
+   double price = signal > 0 ? iLow(_Symbol, display_tf[index], 1)
+                             : iHigh(_Symbol, display_tf[index], 1);
+   price += (signal > 0 ? -1.0 : 1.0) * SignalArrowOffsetPoints * _Point;
+   if(!ObjectCreate(0, name, signal > 0 ? OBJ_ARROW_BUY : OBJ_ARROW_SELL,
+                    0, bar_time, price)) return;
+   ObjectSetInteger(0, name, OBJPROP_COLOR, signal > 0 ? clrGreen : clrRed);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
+   ObjectSetString(0, name, OBJPROP_TOOLTIP,
+                   "Buy Sell V1 " + display_tf_name[index] +
+                   (signal > 0 ? " BUY" : " SELL"));
+}
+
+void UpdateMultiTimeframeDisplay()
+{
+   if(!ShowMultiTimeframeSignals) return;
+   SetPanelLabel("TITLE", "Buy Sell V1 - XAUUSD", SignalPanelX, SignalPanelY,
+                 clrBlack, 11);
+   for(int i=0; i<DISPLAY_TF_COUNT; i++)
+   {
+      int signal = ReadDisplaySignal(i);
+      string state = signal > 0 ? "BUY" : (signal < 0 ? "SELL" : "WAIT");
+      color state_color = signal > 0 ? clrGreen : (signal < 0 ? clrRed : clrDimGray);
+      SetPanelLabel("TF_" + display_tf_name[i], display_tf_name[i] + " : " + state,
+                    SignalPanelX, SignalPanelY + 22 + i * 18, state_color, 10);
+
+      datetime current_bar = iTime(_Symbol, display_tf[i], 0);
+      if(current_bar != 0 && current_bar != display_last_bar[i])
+      {
+         display_last_bar[i] = current_bar;
+         DrawSignalArrow(i, signal);
+      }
+   }
+   ChartRedraw();
+}
 
 bool IsDemoOrTester()
 {
@@ -66,7 +205,7 @@ void ResetDailyCountersIfNeeded()
 
 string PortfolioCounterName()
 {
-   return("AUTOBOT_TRADES_" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) +
+   return("AUTOBOT_TRADES_" + LongToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) +
           "_" + IntegerToString(CurrentDayKey()));
 }
 
@@ -89,6 +228,8 @@ bool RiskLimitsAllowEntry()
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    if(trades_today >= MaximumTradesPerDay) return(false);
    if(PortfolioTradesToday() >= MaximumPortfolioTradesPerDay) return(false);
+   if(day_start_equity > 0.0 && equity >= day_start_equity + DailyProfitCapMoney)
+      return(false);
    if(day_start_equity > 0.0 && equity <= day_start_equity * (1.0 - DailyLossLimitPct / 100.0))
       return(false);
    if(initial_equity > 0.0 && equity <= initial_equity * (1.0 - MaximumEquityDrawdownPct / 100.0))
@@ -119,7 +260,8 @@ double RiskBasedVolume(double stop_distance)
    if(stop_distance <= 0.0 || tick_size <= 0.0 || tick_value <= 0.0)
       return(NormalizeVolume(FallbackVolume));
 
-   double risk_money = AccountInfoDouble(ACCOUNT_EQUITY) * RiskPerTradePct / 100.0;
+   double risk_money = AccountInfoDouble(ACCOUNT_EQUITY) *
+                       (RiskPerTradePct / MaximumOpenPositions) / 100.0;
    double loss_per_lot = (stop_distance / tick_size) * tick_value;
    if(loss_per_lot <= 0.0) return(NormalizeVolume(FallbackVolume));
    return(NormalizeVolume(risk_money / loss_per_lot));
@@ -149,6 +291,8 @@ bool ReadIndicators(double &fast_now, double &fast_before,
 
 bool OpenPosition(bool buy_signal, double atr_value, datetime current_bar)
 {
+   if(CountOwnOpenPositions() >= MaximumOpenPositions ||
+      !ExistingPositionsMatchDirection(buy_signal)) return(false);
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double entry = buy_signal ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
                              : SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -189,7 +333,8 @@ int OnInit()
    }
    if(FastEmaPeriod <= 1 || SlowEmaPeriod <= FastEmaPeriod || RiskPerTradePct <= 0.0 ||
       StopAtrMultiple <= 0.0 || RewardRiskRatio <= 0.0 || MaximumTradesPerDay < 1 ||
-      MaximumPortfolioTradesPerDay < MaximumTradesPerDay)
+      MaximumPortfolioTradesPerDay < MaximumTradesPerDay || DailyTargetMoney < 0.0 ||
+      DailyProfitCapMoney <= DailyTargetMoney || MaximumOpenPositions < 1)
       return(INIT_PARAMETERS_INCORRECT);
 
    trade.SetExpertMagicNumber(MagicNumber);
@@ -204,11 +349,27 @@ int OnInit()
       rsi_handle == INVALID_HANDLE || adx_handle == INVALID_HANDLE || atr_handle == INVALID_HANDLE)
       return(INIT_FAILED);
 
+   for(int i=0; i<DISPLAY_TF_COUNT; i++)
+   {
+      display_fast[i] = iMA(_Symbol, display_tf[i], FastEmaPeriod, 0, MODE_EMA, PRICE_CLOSE);
+      display_slow[i] = iMA(_Symbol, display_tf[i], SlowEmaPeriod, 0, MODE_EMA, PRICE_CLOSE);
+      display_rsi[i] = iRSI(_Symbol, display_tf[i], RsiPeriod, PRICE_CLOSE);
+      display_adx[i] = iADX(_Symbol, display_tf[i], AdxPeriod);
+      display_last_bar[i] = 0;
+      if(display_fast[i] == INVALID_HANDLE || display_slow[i] == INVALID_HANDLE ||
+         display_rsi[i] == INVALID_HANDLE || display_adx[i] == INVALID_HANDLE)
+         return(INIT_FAILED);
+   }
+
    initial_equity = AccountInfoDouble(ACCOUNT_EQUITY);
    ResetDailyCountersIfNeeded();
+   ApplyChartTheme();
    Print("GOLD DEMO BOT READY: symbol max/day=", MaximumTradesPerDay,
          " portfolio max/day=", MaximumPortfolioTradesPerDay,
-         " risk/trade=", RiskPerTradePct, "% daily stop=", DailyLossLimitPct, "%");
+         " max open=", MaximumOpenPositions,
+         " total position risk budget=", RiskPerTradePct, "% daily target=", DailyTargetMoney,
+         " daily cap=", DailyProfitCapMoney, " daily stop=", DailyLossLimitPct, "%");
+   UpdateMultiTimeframeDisplay();
    return(INIT_SUCCEEDED);
 }
 
@@ -219,15 +380,25 @@ void OnDeinit(const int reason)
    if(rsi_handle != INVALID_HANDLE) IndicatorRelease(rsi_handle);
    if(adx_handle != INVALID_HANDLE) IndicatorRelease(adx_handle);
    if(atr_handle != INVALID_HANDLE) IndicatorRelease(atr_handle);
+   for(int i=0; i<DISPLAY_TF_COUNT; i++)
+   {
+      if(display_fast[i] != INVALID_HANDLE) IndicatorRelease(display_fast[i]);
+      if(display_slow[i] != INVALID_HANDLE) IndicatorRelease(display_slow[i]);
+      if(display_rsi[i] != INVALID_HANDLE) IndicatorRelease(display_rsi[i]);
+      if(display_adx[i] != INVALID_HANDLE) IndicatorRelease(display_adx[i]);
+   }
+   ObjectsDeleteAll(0, visual_prefix);
 }
 
 void OnTick()
 {
+   UpdateMultiTimeframeDisplay();
    datetime current_bar = iTime(_Symbol, SignalTimeframe, 0);
    if(current_bar == 0 || current_bar == last_bar) return;
    last_bar = current_bar;
 
-   if(PositionSelect(_Symbol) || !RiskLimitsAllowEntry() || !CooldownComplete()) return;
+   if(CountOwnOpenPositions() >= MaximumOpenPositions ||
+      !RiskLimitsAllowEntry() || !CooldownComplete()) return;
 
    double fast_now, fast_before, slow_now, slow_before, rsi_now, adx_now, atr_now;
    if(!ReadIndicators(fast_now, fast_before, slow_now, slow_before, rsi_now, adx_now, atr_now)) return;
