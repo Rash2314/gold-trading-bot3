@@ -1,6 +1,6 @@
 #property strict
-#property version   "1.00"
-#property description "XAUUSD Donchian/ATR research EA restricted to MT5 Strategy Tester"
+#property version   "1.10"
+#property description "Risk-reduced XAUUSD Donchian/ATR EA restricted to MT5 Strategy Tester"
 
 // Strategy concepts independently implemented for this project.
 // References: https://github.com/EarnForex/Donchian-Ultimate
@@ -20,13 +20,14 @@ input double InitialStopAtr = 2.0;
 input double RewardRiskRatio = 2.0;
 input double TrailActivationR = 1.0;
 input double TrailAtrMultiple = 2.0;
-input double TotalRiskBudgetPct = 0.60;
+input double TotalRiskBudgetPct = 0.30;
 input bool UseMinimumBrokerLot = true;
-input int MaximumOpenPositions = 3;
+input int MaximumOpenPositions = 1;
 input int CooldownBars = 3;
-input int MaximumTradesPerDay = 12;
+input int MaximumTradesPerDay = 8;
 input double DailyProfitCapMoney = 120.0;
-input double DailyLossLimitPct = 5.0;
+input double DailyLossLimitPct = 3.0;
+input double MaximumEquityDrawdownPct = 20.0;
 input int MaximumSpreadPoints = 1000;
 input int SlippagePoints = 50;
 input long MagicNumber = 23142128;
@@ -41,6 +42,7 @@ datetime last_entry_bar = 0;
 int day_key = -1;
 int trades_today = 0;
 double day_start_equity = 0.0;
+double initial_equity = 0.0;
 
 bool IsTesterOnly()
 {
@@ -103,6 +105,31 @@ bool DailyLimitsAllowEntry()
       equity <= day_start_equity * (1.0 - DailyLossLimitPct / 100.0))
       return(false);
    return((int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) <= MaximumSpreadPoints);
+}
+
+bool HardRiskLimitBreached()
+{
+   ResetDayIfNeeded();
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   bool daily_breach = day_start_equity > 0.0 &&
+      equity <= day_start_equity * (1.0 - DailyLossLimitPct / 100.0);
+   bool total_breach = initial_equity > 0.0 &&
+      equity <= initial_equity * (1.0 - MaximumEquityDrawdownPct / 100.0);
+   return(daily_breach || total_breach);
+}
+
+void CloseOwnPositionsAtRiskLimit()
+{
+   for(int i=PositionsTotal()-1; i>=0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol ||
+         PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if(!trade.PositionClose(ticket))
+         PrintFormat("RISK LIMIT: failed to close ticket %I64u, retcode=%u.",
+                     ticket, trade.ResultRetcode());
+   }
 }
 
 double NormalizeVolume(double requested)
@@ -250,7 +277,8 @@ int OnInit()
    }
    if(DonchianPeriod < 5 || FastTrendEma < 2 || SlowTrendEma <= FastTrendEma ||
       AtrPeriod < 2 || InitialStopAtr <= 0.0 || RewardRiskRatio <= 0.0 ||
-      MaximumOpenPositions < 1 || TotalRiskBudgetPct <= 0.0 || CooldownBars < 1)
+      MaximumOpenPositions < 1 || TotalRiskBudgetPct <= 0.0 || CooldownBars < 1 ||
+      DailyLossLimitPct <= 0.0 || MaximumEquityDrawdownPct <= 0.0)
       return(INIT_PARAMETERS_INCORRECT);
 
    trade.SetExpertMagicNumber(MagicNumber);
@@ -263,6 +291,7 @@ int OnInit()
    if(atr_handle == INVALID_HANDLE || adx_handle == INVALID_HANDLE ||
       fast_trend_handle == INVALID_HANDLE || slow_trend_handle == INVALID_HANDLE)
       return(INIT_FAILED);
+   initial_equity = AccountInfoDouble(ACCOUNT_EQUITY);
    ResetDayIfNeeded();
    return(INIT_SUCCEEDED);
 }
@@ -277,6 +306,11 @@ void OnDeinit(const int reason)
 
 void OnTick()
 {
+   if(HardRiskLimitBreached())
+   {
+      CloseOwnPositionsAtRiskLimit();
+      return;
+   }
    ManageTrailingStops();
    datetime current_bar = iTime(_Symbol, EntryTimeframe, 0);
    if(current_bar == 0 || current_bar == last_bar) return;
