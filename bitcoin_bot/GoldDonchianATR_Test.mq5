@@ -21,6 +21,7 @@ input double RewardRiskRatio = 2.0;
 input double TrailActivationR = 1.0;
 input double TrailAtrMultiple = 2.0;
 input double TotalRiskBudgetPct = 0.60;
+input bool UseMinimumBrokerLot = true;
 input int MaximumOpenPositions = 3;
 input int CooldownBars = 3;
 input int MaximumTradesPerDay = 12;
@@ -109,10 +110,17 @@ double NormalizeVolume(double requested)
    double minimum = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double maximum = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   if(step <= 0.0 || requested < minimum) return(0.0);
+   if(step <= 0.0 || minimum <= 0.0 || requested <= 0.0) return(0.0);
+   int digits = (int)MathMax(0.0, MathRound(-MathLog10(step)));
+   if(requested < minimum)
+   {
+      if(!UseMinimumBrokerLot) return(0.0);
+      PrintFormat("VOLUME: calculated %.4f lot is below broker minimum %.4f; using minimum lot for this tester-only run.",
+                  requested, minimum);
+      return(NormalizeDouble(minimum, digits));
+   }
    double volume = MathFloor(requested / step) * step;
    volume = MathMax(minimum, MathMin(maximum, volume));
-   int digits = (int)MathMax(0.0, MathRound(-MathLog10(step)));
    return(NormalizeDouble(volume, digits));
 }
 
