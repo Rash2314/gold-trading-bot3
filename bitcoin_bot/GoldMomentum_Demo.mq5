@@ -66,7 +66,7 @@ void ResetDailyCountersIfNeeded()
 
 string PortfolioCounterName()
 {
-   return("AUTOBOT_TRADES_" + LongToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) +
+   return("AUTOBOT_TRADES_" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) +
           "_" + IntegerToString(CurrentDayKey()));
 }
 
